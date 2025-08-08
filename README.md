@@ -61,15 +61,20 @@ guestuser;
 2. Copy the script to your working directory
    ```powershell
    Copy-Item .\secure_windows.ps1 C:\'working_directory'\
-3. Create Users.txt in same directory as secure_windows.ps1
+3. Create Users.txt in same directory as secure_windows.ps1 (*fill with authorized users*)
    ```powershell
    notepad C:\\'working_directory'\Users.txt
-fill it with authorized accounts\
 4. Run PowerShell as Administrator\
 5. Allow temporary script execution
-   ```powershellSet-ExecutionPolicy Unrestricted -Scope Process
+   ```powershell
+   Set-ExecutionPolicy Unrestricted -Scope Process
    ```
 6. Run the script from the directory where both files are located
    ```powershell
    .\secure_windows.ps1
-
+7. Respont to prompts - The script will:
+   - Ask before add/removing users
+   - Ask before changing admin group membership
+   - Ask before uninstalling suspicious tools
+   - Ask before disabling services
+   - Ask before applying policies/firewall rules

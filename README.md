@@ -64,8 +64,12 @@ guestuser;
 3. Create Users.txt in same directory as secure_windows.ps1
    ```powershell
    notepad C:\\'working_directory'\Users.txt
-fill it with authorized accounts
-4. Run PowerShell as Administrator
+fill it with authorized accounts\
+4. Run PowerShell as Administrator\
 5. Allow temporary script execution
+   ```powershellSet-ExecutionPolicy Unrestricted -Scope Process
+   ```
+6. Run the script from the directory where both files are located
+   ```powershell
+   .\secure_windows.ps1
 
-6. Run the script where both files are located

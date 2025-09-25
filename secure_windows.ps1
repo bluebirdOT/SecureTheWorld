@@ -16,14 +16,13 @@ $Summary = @()
 
 # Initialize log file
 if (Test-Path $LogPath) { Remove-Item $LogPath -Force }
-Write-Output "=== Script started at $(Get-Date) ===" | Out-File $LogPath
+Write-Output "=== Script started ===" | Out-File $LogPath
 
 # ====== Logging Function ======
 function Write-Log {
     param([string]$Message, [string]$Level = "INFO")
-    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-    $entry = "$timestamp [$Level] $Message"
-    $global:Summary += @{ Time = $timestamp; Level = $Level; Message = $Message }
+    $entry = "[$Level] $Message"
+    $global:Summary += @{ Level = $Level; Message = $Message }
     Write-Output $entry | Tee-Object -FilePath $LogPath -Append
 }
 
@@ -158,46 +157,186 @@ function Harden-Services {
     }
 }
 
-# ====== Bad Tools Detection & Removal ======
 function Remove-BadTools {
-    $BadToolNames = @(
-        "nmap","wireshark","telnet","ftp","curl","wget",
-        "php","python","ruby","perl","john","metasploit"
+    # Names/patterns to look for (case-insensitive regex)
+  $BadToolNames = @(
+    # Hacking / pen-testing tools
+    "wireshark","nmap","metasploit","john","hydra","aircrack","kali","netcat","nc.exe","putty","telnet","ftp","curl","wget","python","php","ruby","perl",
+    # System cleaners / potentially unwanted tools
+    "ccleaner","bleachbit",
+    # Media / games / chat apps
+    "steam","epicgameslauncher","minecraft","discord","vlc","obs","spotify"
+)
+
+    Write-Log "Scanning for suspicious Appx and classic applications..." "ACTION"
+
+    # ----- Appx packages -----
+    try {
+        $appxPkgs = Get-AppxPackage -ErrorAction SilentlyContinue
+        foreach ($tool in $BadToolNames) {
+            $matches = $appxPkgs | Where-Object { $_.Name -match $tool }
+            foreach ($pkg in $matches) {
+                $display = "$($pkg.Name) ($($pkg.PackageFullName))"
+                Write-Log "Found Appx package: $display" "WARN"
+                if (Confirm-Action "Remove Appx package $display?") {
+                    try {
+                        Remove-AppxPackage -Package $pkg.PackageFullName -ErrorAction Stop
+                        Write-Log "Removed Appx package: $display" "ACTION"
+                    } catch {
+                        Write-Log "Failed to remove Appx package $display - $_" "ERROR"
+                    }
+                } else {
+                    Write-Log "Skipped Appx package: $display" "INFO"
+                }
+            }
+        }
+    } catch {
+        Write-Log "Appx package scan failed - $_" "ERROR"
+    }
+
+    # ----- Classic (Win32) applications via registry uninstall keys -----
+    $uninstallPaths = @(
+        "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*",
+        "HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*",
+        "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*"
     )
 
+    $classicApps = @()
+    foreach ($path in $uninstallPaths) {
+        try {
+            $items = Get-ItemProperty -Path $path -ErrorAction SilentlyContinue | Select-Object DisplayName, UninstallString, QuietUninstallString, InstallLocation
+            $classicApps += $items
+        } catch {
+            # Continue even if one hive is not accessible
+        }
+    }
+
     foreach ($tool in $BadToolNames) {
-        $apps = Get-AppxPackage | Where-Object { $_.Name -match $tool }
-        if ($apps) {
-            Write-Log "Suspicious app detected: $tool" "WARN"
-            if (Confirm-Action "Remove Appx application $tool?") {
+        $candidates = $classicApps | Where-Object { $_.DisplayName -and ($_.DisplayName -match $tool) } | Sort-Object DisplayName -Unique
+        foreach ($app in $candidates) {
+            $name = $app.DisplayName
+            $uninstall = $app.UninstallString
+            $quiet = $app.QuietUninstallString
+            $installLoc = $app.InstallLocation
+
+            Write-Log "Found classic app: $name" "WARN"
+            if (-not $uninstall -and -not $quiet) {
+                Write-Log "No uninstall command found for $name; skipping automatic uninstall" "ERROR"
+                if (Confirm-Action "No automatic uninstaller found for '$name'. Open Control Panel > Programs and Features to uninstall manually?") {
+                    Start-Process "appwiz.cpl"
+                    Write-Log "Opened Programs and Features for manual uninstall of $name" "INFO"
+                } else {
+                    Write-Log "User skipped manual uninstall prompt for $name" "INFO"
+                }
+                continue
+            }
+
+            if (Confirm-Action "Uninstall '$name' now?") {
+                # Prefer quiet uninstall string if present
+                $toRun = if ($quiet) { $quiet } else { $uninstall }
+
+                # If the string references msiexec with a GUID, extract GUID
+                if ($toRun -match "Msi[Ee]xec.*\{(?<guid>[0-9A-Fa-f\-]+)\}") {
+                    $guid = $Matches['guid']
+                    $msiArgs = "/x {$guid} /qn /norestart"
+                    try {
+                        Write-Log "Attempting silent MSI uninstall for $name (GUID: {$guid})" "ACTION"
+                        Start-Process -FilePath "msiexec.exe" -ArgumentList $msiArgs -Wait -NoNewWindow
+                        Write-Log "msiexec returned for $name (GUID: {$guid})" "INFO"
+                    } catch {
+                        Write-Log "msiexec uninstall failed for $name - $_" "ERROR"
+                    }
+                } else {
+                    # Try to parse an executable path and args
+                    $exe = $null; $args = $null
+                    if ($toRun -match '^"(?<exe>[^"]+)"\s*(?<args>.*)$') {
+                        $exe = $Matches['exe']
+                        $args = $Matches['args']
+                    } elseif ($toRun -match '^(?<exe>\S+)\s*(?<args>.*)$') {
+                        $exe = $Matches['exe']
+                        $args = $Matches['args']
+                    }
+
+                    if ($exe) {
+                        # If path is relative or contains msiexec, normalize
+                        try {
+                            # If file exists, try to stop any running processes that point to that file
+                            if (Test-Path $exe) {
+                                $running = Get-Process -ErrorAction SilentlyContinue | Where-Object {
+                                    ($_.Path -and ($_.Path -eq $exe)) -or ($_.ProcessName -and $exe -match $_.ProcessName)
+                                }
+                                foreach ($p in $running) {
+                                    try {
+                                        Write-Log "Stopping running process $($p.ProcessName) (Id $($p.Id)) before uninstall" "ACTION"
+                                        Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+                                    } catch {
+                                        Write-Log "Failed to stop process $($p.ProcessName) - $_" "WARN"
+                                    }
+                                }
+                            }
+                        } catch {
+                            # ignore process stopping errors
+                        }
+
+                        # Try to add common silent args if none supplied (best-effort)
+                        if (-not $args -or $args.Trim() -eq "") {
+                            # Many uninstallers support /S, /quiet, or /silent; try /S then /quiet
+                            $trialArgs = @("/S","/quiet","/silent")
+                        } else {
+                            $trialArgs = @($args)
+                        }
+
+                        $uninstalled = $false
+                        foreach ($tryArgs in $trialArgs) {
+                            try {
+                                Write-Log "Running uninstaller: $exe $tryArgs" "ACTION"
+                                Start-Process -FilePath $exe -ArgumentList $tryArgs -Wait -NoNewWindow -ErrorAction Stop
+                                Start-Sleep -Seconds 1
+                                Write-Log "Uninstaller finished for $name with args: $tryArgs" "INFO"
+                                $uninstalled = $true
+                                break
+                            } catch {
+                                Write-Log "Uninstaller attempt failed for $name with args '$tryArgs' - $_" "WARN"
+                            }
+                        }
+
+                        if (-not $uninstalled) {
+                            # Final attempt: run the original uninstall string as-is (may include its own args)
+                            try {
+                                Write-Log "Attempting uninstall with original command string for $name" "ACTION"
+                                # Use cmd /c to allow complex uninstall strings
+                                Start-Process -FilePath "cmd.exe" -ArgumentList "/c", $toRun -Wait -NoNewWindow -ErrorAction Stop
+                                Write-Log "Original uninstall command executed for $name" "INFO"
+                            } catch {
+                                Write-Log "Failed to execute original uninstall command for $name - $_" "ERROR"
+                            }
+                        }
+                    } else {
+                        Write-Log "Could not parse uninstall command for $name: $toRun" "ERROR"
+                    }
+                }
+
+                # After attempting uninstall, provide a moment and optionally check if the DisplayName still exists
+                Start-Sleep -Seconds 2
+                $stillInstalled = $false
                 try {
-                    $apps | Remove-AppxPackage
-                    Write-Log "Removed application: $tool" "ACTION"
+                    $stillInstalled = (Get-ItemProperty -Path $uninstallPaths -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -eq $name }) -ne $null
                 } catch {
-                    Write-Log "Failed to remove application $tool - $_" "ERROR"
+                    $stillInstalled = $true
+                }
+
+                if (-not $stillInstalled) {
+                    Write-Log "Confirmed: $name appears removed (or no longer present in registry uninstall entries)" "ACTION"
+                } else {
+                    Write-Log "Warning: $name still appears present after uninstall attempt. Manual removal may be required." "WARN"
                 }
             } else {
-                Write-Log "Skipped removing app: $tool" "INFO"
+                Write-Log "Skipped uninstall for $name" "INFO"
             }
         }
     }
 
-    $classicApps = Get-ItemProperty HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\* ,
-                                   HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\* `
-                    -ErrorAction SilentlyContinue | Select-Object DisplayName
-
-    foreach ($tool in $BadToolNames) {
-        foreach ($app in $classicApps) {
-            if ($app.DisplayName -and $app.DisplayName -match $tool) {
-                Write-Log "Suspicious classic app detected: $($app.DisplayName)" "WARN"
-                if (Confirm-Action "Please uninstall '$($app.DisplayName)' manually via Control Panel. Confirm when done?") {
-                    Write-Log "User confirmed manual uninstall of $($app.DisplayName)" "ACTION"
-                } else {
-                    Write-Log "User skipped manual uninstall of $($app.DisplayName)" "INFO"
-                }
-            }
-        }
-    }
+    Write-Log "Finished scanning/uninstall attempts for suspicious applications." "INFO"
 }
 
 # ====== Password & Account Lockout Policy ======
@@ -334,12 +473,12 @@ function Print-Summary {
 
     if ($actions.Count -gt 0) {
         Write-Host "Actions:" -ForegroundColor Green
-        $actions | ForEach-Object { Write-Host "$($_.Time) - $($_.Message)" }
+        $actions | ForEach-Object { Write-Host "- $($_.Message)" }
     }
 
     if ($errors.Count -gt 0) {
         Write-Host "`nErrors:" -ForegroundColor Red
-        $errors | ForEach-Object { Write-Host "$($_.Time) - $($_.Message)" }
+        $errors | ForEach-Object { Write-Host "- $($_.Message)" }
     }
 }
 

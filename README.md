@@ -4,7 +4,7 @@ This is my repo of CyberPatriot scripts on my journey to SecureTheWorld
 # CyberPatriot Windows Hardening Script
 
 **Author:** *William Torres*  
-**Version:** 1.0  
+**Version:** 1.2 
 **Compatibility:** Windows 10 / Windows 11 (Admin Privileges Required)
 
 ---

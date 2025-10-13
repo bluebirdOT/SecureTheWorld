@@ -3,28 +3,14 @@
     CyberPatriot Windows Hardening Script - Prompt-Driven Safe Mode
 .DESCRIPTION
     Hardens Windows systems by enforcing user/account policies, audit policies, firewall rules,
-    service & app hardening, password policies, and other best practices.
-    Always prompts before making changes.
-    Reads authorized users and admins from "Users.txt" in the script directory.
+    service & app hardening, password policies, AV, update, and other best practices.
+    Prompts before making any changes, designed for scoring and safety.
+    Reads authorized users/admins from "Users.txt" in the script directory.
 #>
 
 # ====== Initialization ======
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $UserListPath = Join-Path $ScriptDir "Users.txt"
-$LogPath = Join-Path $ScriptDir "secure_windows.log"
-$Summary = @()
-
-# Initialize log file
-if (Test-Path $LogPath) { Remove-Item $LogPath -Force }
-Write-Output "=== Script started ===" | Out-File $LogPath
-
-# ====== Logging Function ======
-function Write-Log {
-    param([string]$Message, [string]$Level = "INFO")
-    $entry = "[$Level] $Message"
-    $global:Summary += @{ Level = $Level; Message = $Message }
-    Write-Output $entry | Tee-Object -FilePath $LogPath -Append
-}
 
 # ====== Prompt Function ======
 function Confirm-Action {
@@ -36,23 +22,22 @@ function Confirm-Action {
 
 # ====== Audit Policy Enforcement ======
 function Enable-AllAudits {
-    Write-Log "Preparing to enable all Success/Failure audit policies" "ACTION"
     if (Confirm-Action "Apply audit policy changes (all success/failure events)?") {
         try {
             auditpol /set /category:* /success:enable /failure:enable | Out-Null
-            Write-Log "All audit categories set to Success and Failure" "INFO"
+            Write-Host "All audit categories set to Success and Failure" -ForegroundColor Green
         } catch {
-            Write-Log "Failed to configure audit policies - $_" "ERROR"
+            Write-Host "Failed to configure audit policies: $_" -ForegroundColor Red
         }
     } else {
-        Write-Log "Skipped applying audit policy changes" "INFO"
+        Write-Host "Skipped audit policy changes." -ForegroundColor Yellow
     }
 }
 
 # ====== User Management ======
 function Manage-Users {
     if (-not (Test-Path $UserListPath)) {
-        Write-Log "User list file not found: $UserListPath" "ERROR"
+        Write-Host "User list file not found: $UserListPath" -ForegroundColor Red
         return
     }
 
@@ -73,12 +58,10 @@ function Manage-Users {
                 try {
                     $password = Read-Host "Enter temporary password for $user" -AsSecureString
                     New-LocalUser -Name $user -Password $password -UserMayNotChangePassword $false -PasswordNeverExpires $false
-                    Write-Log "Added missing user: $user" "ACTION"
+                    Write-Host "Added missing user: $user" -ForegroundColor Green
                 } catch {
-                    Write-Log "Failed to add user $user - $_" "ERROR"
+                    Write-Host "Failed to add user $user: $_" -ForegroundColor Red
                 }
-            } else {
-                Write-Log "Skipped adding user: $user" "INFO"
             }
         }
     }
@@ -89,12 +72,10 @@ function Manage-Users {
             if (Confirm-Action "User '$user' is not authorized. Remove?") {
                 try {
                     Remove-LocalUser -Name $user
-                    Write-Log "Removed unauthorized user: $user" "ACTION"
+                    Write-Host "Removed unauthorized user: $user" -ForegroundColor Green
                 } catch {
-                    Write-Log "Failed to remove user $user - $_" "ERROR"
+                    Write-Host "Failed to remove user $user: $_" -ForegroundColor Red
                 }
-            } else {
-                Write-Log "Skipped removing unauthorized user: $user" "INFO"
             }
         }
     }
@@ -109,23 +90,19 @@ function Manage-Users {
             if (Confirm-Action "User '$user' should be admin. Add to Administrators?") {
                 try {
                     Add-LocalGroupMember -Group "Administrators" -Member $user
-                    Write-Log "Granted admin rights to $user" "ACTION"
+                    Write-Host "Granted admin rights to $user" -ForegroundColor Green
                 } catch {
-                    Write-Log "Failed to add admin rights to $user - $_" "ERROR"
+                    Write-Host "Failed to add admin rights to $user: $_" -ForegroundColor Red
                 }
-            } else {
-                Write-Log "Skipped granting admin rights to $user" "INFO"
             }
         } elseif (-not $shouldBeAdmin -and $isAdmin) {
             if (Confirm-Action "User '$user' should NOT be admin. Remove from Administrators?") {
                 try {
                     Remove-LocalGroupMember -Group "Administrators" -Member $user
-                    Write-Log "Removed admin rights from $user" "ACTION"
+                    Write-Host "Removed admin rights from $user" -ForegroundColor Green
                 } catch {
-                    Write-Log "Failed to remove admin rights from $user - $_" "ERROR"
+                    Write-Host "Failed to remove admin rights from $user: $_" -ForegroundColor Red
                 }
-            } else {
-                Write-Log "Skipped removing admin rights from $user" "INFO"
             }
         }
     }
@@ -141,211 +118,70 @@ function Harden-Services {
     foreach ($service in $BadServices) {
         $svc = Get-Service -Name $service -ErrorAction SilentlyContinue
         if ($svc) {
-            Write-Log "Service detected: $service (Status: $($svc.Status))" "WARN"
+            Write-Host "Service detected: $service (Status: $($svc.Status))" -ForegroundColor Yellow
             if (Confirm-Action "Disable and stop service $service?") {
                 try {
                     Stop-Service -Name $service -Force
                     Set-Service -Name $service -StartupType Disabled
-                    Write-Log "Disabled service: $service" "ACTION"
+                    Write-Host "Disabled service: $service" -ForegroundColor Green
                 } catch {
-                    Write-Log "Failed to disable service $service - $_" "ERROR"
+                    Write-Host "Failed to disable service $service: $_" -ForegroundColor Red
                 }
-            } else {
-                Write-Log "Skipped disabling service: $service" "INFO"
             }
         }
     }
 }
 
+# ====== App Removal ======
 function Remove-BadTools {
-    # Names/patterns to look for (case-insensitive regex)
-  $BadToolNames = @(
-    # Hacking / pen-testing tools
-    "wireshark","nmap","metasploit","john","hydra","aircrack","kali","netcat","nc.exe","putty","telnet","ftp","curl","wget","python","php","ruby","perl",
-    # System cleaners / potentially unwanted tools
-    "ccleaner","bleachbit",
-    # Media / games / chat apps
-    "steam","epicgameslauncher","minecraft","discord","vlc","obs","spotify"
-)
+    $BadToolNames = @(
+        "wireshark","nmap","metasploit","john","hydra","aircrack","kali",
+        "netcat","nc.exe","putty","telnet","ftp","steam","epicgameslauncher",
+        "discord","vlc","obs","spotify","ccleaner","bleachbit","minecraft"
+    )
 
-    Write-Log "Scanning for suspicious Appx and classic applications..." "ACTION"
-
-    # ----- Appx packages -----
+    # Appx/UWP removal
     try {
         $appxPkgs = Get-AppxPackage -ErrorAction SilentlyContinue
         foreach ($tool in $BadToolNames) {
             $matches = $appxPkgs | Where-Object { $_.Name -match $tool }
             foreach ($pkg in $matches) {
                 $display = "$($pkg.Name) ($($pkg.PackageFullName))"
-                Write-Log "Found Appx package: $display" "WARN"
+                Write-Host "Found Appx package: $display" -ForegroundColor Yellow
                 if (Confirm-Action "Remove Appx package $display?") {
-                    try {
-                        Remove-AppxPackage -Package $pkg.PackageFullName -ErrorAction Stop
-                        Write-Log "Removed Appx package: $display" "ACTION"
-                    } catch {
-                        Write-Log "Failed to remove Appx package $display - $_" "ERROR"
-                    }
-                } else {
-                    Write-Log "Skipped Appx package: $display" "INFO"
+                    Remove-AppxPackage -Package $pkg.PackageFullName
+                    Write-Host "Removed Appx package: $display" -ForegroundColor Green
                 }
             }
         }
     } catch {
-        Write-Log "Appx package scan failed - $_" "ERROR"
+        Write-Host "Appx package scan failed: $_" -ForegroundColor Red
     }
 
-    # ----- Classic (Win32) applications via registry uninstall keys -----
-    $uninstallPaths = @(
-        "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*",
-        "HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*",
-        "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*"
-    )
-
-    $classicApps = @()
-    foreach ($path in $uninstallPaths) {
-        try {
-            $items = Get-ItemProperty -Path $path -ErrorAction SilentlyContinue | Select-Object DisplayName, UninstallString, QuietUninstallString, InstallLocation
-            $classicApps += $items
-        } catch {
-            # Continue even if one hive is not accessible
-        }
-    }
-
-    foreach ($tool in $BadToolNames) {
-        $candidates = $classicApps | Where-Object { $_.DisplayName -and ($_.DisplayName -match $tool) } | Sort-Object DisplayName -Unique
-        foreach ($app in $candidates) {
-            $name = $app.DisplayName
-            $uninstall = $app.UninstallString
-            $quiet = $app.QuietUninstallString
-            $installLoc = $app.InstallLocation
-
-            Write-Log "Found classic app: $name" "WARN"
-            if (-not $uninstall -and -not $quiet) {
-                Write-Log "No uninstall command found for $name; skipping automatic uninstall" "ERROR"
-                if (Confirm-Action "No automatic uninstaller found for '$name'. Open Control Panel > Programs and Features to uninstall manually?") {
-                    Start-Process "appwiz.cpl"
-                    Write-Log "Opened Programs and Features for manual uninstall of $name" "INFO"
-                } else {
-                    Write-Log "User skipped manual uninstall prompt for $name" "INFO"
+    # Win32 app removal
+    try {
+        $packages = Get-Package -ErrorAction SilentlyContinue
+        foreach ($tool in $BadToolNames) {
+            $candidates = $packages | Where-Object { $_.Name -match $tool -or ($_.DisplayName -match $tool) }
+            foreach ($pkg in $candidates) {
+                $name = $pkg.Name
+                Write-Host "Found installed Win32 app: $name" -ForegroundColor Yellow
+                if (Confirm-Action "Uninstall '$name' now?") {
+                    Uninstall-Package -Name $name -Force
+                    Write-Host "Uninstalled package: $name" -ForegroundColor Green
                 }
-                continue
-            }
-
-            if (Confirm-Action "Uninstall '$name' now?") {
-                # Prefer quiet uninstall string if present
-                $toRun = if ($quiet) { $quiet } else { $uninstall }
-
-                # If the string references msiexec with a GUID, extract GUID
-                if ($toRun -match "Msi[Ee]xec.*\{(?<guid>[0-9A-Fa-f\-]+)\}") {
-                    $guid = $Matches['guid']
-                    $msiArgs = "/x {$guid} /qn /norestart"
-                    try {
-                        Write-Log "Attempting silent MSI uninstall for $name (GUID: {$guid})" "ACTION"
-                        Start-Process -FilePath "msiexec.exe" -ArgumentList $msiArgs -Wait -NoNewWindow
-                        Write-Log "msiexec returned for $name (GUID: {$guid})" "INFO"
-                    } catch {
-                        Write-Log "msiexec uninstall failed for $name - $_" "ERROR"
-                    }
-                } else {
-                    # Try to parse an executable path and args
-                    $exe = $null; $args = $null
-                    if ($toRun -match '^"(?<exe>[^"]+)"\s*(?<args>.*)$') {
-                        $exe = $Matches['exe']
-                        $args = $Matches['args']
-                    } elseif ($toRun -match '^(?<exe>\S+)\s*(?<args>.*)$') {
-                        $exe = $Matches['exe']
-                        $args = $Matches['args']
-                    }
-
-                    if ($exe) {
-                        # If path is relative or contains msiexec, normalize
-                        try {
-                            # If file exists, try to stop any running processes that point to that file
-                            if (Test-Path $exe) {
-                                $running = Get-Process -ErrorAction SilentlyContinue | Where-Object {
-                                    ($_.Path -and ($_.Path -eq $exe)) -or ($_.ProcessName -and $exe -match $_.ProcessName)
-                                }
-                                foreach ($p in $running) {
-                                    try {
-                                        Write-Log "Stopping running process $($p.ProcessName) (Id $($p.Id)) before uninstall" "ACTION"
-                                        Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
-                                    } catch {
-                                        Write-Log "Failed to stop process $($p.ProcessName) - $_" "WARN"
-                                    }
-                                }
-                            }
-                        } catch {
-                            # ignore process stopping errors
-                        }
-
-                        # Try to add common silent args if none supplied (best-effort)
-                        if (-not $args -or $args.Trim() -eq "") {
-                            # Many uninstallers support /S, /quiet, or /silent; try /S then /quiet
-                            $trialArgs = @("/S","/quiet","/silent")
-                        } else {
-                            $trialArgs = @($args)
-                        }
-
-                        $uninstalled = $false
-                        foreach ($tryArgs in $trialArgs) {
-                            try {
-                                Write-Log "Running uninstaller: $exe $tryArgs" "ACTION"
-                                Start-Process -FilePath $exe -ArgumentList $tryArgs -Wait -NoNewWindow -ErrorAction Stop
-                                Start-Sleep -Seconds 1
-                                Write-Log "Uninstaller finished for $name with args: $tryArgs" "INFO"
-                                $uninstalled = $true
-                                break
-                            } catch {
-                                Write-Log "Uninstaller attempt failed for $name with args '$tryArgs' - $_" "WARN"
-                            }
-                        }
-
-                        if (-not $uninstalled) {
-                            # Final attempt: run the original uninstall string as-is (may include its own args)
-                            try {
-                                Write-Log "Attempting uninstall with original command string for $name" "ACTION"
-                                # Use cmd /c to allow complex uninstall strings
-                                Start-Process -FilePath "cmd.exe" -ArgumentList "/c", $toRun -Wait -NoNewWindow -ErrorAction Stop
-                                Write-Log "Original uninstall command executed for $name" "INFO"
-                            } catch {
-                                Write-Log "Failed to execute original uninstall command for $name - $_" "ERROR"
-                            }
-                        }
-                    } else {
-                        Write-Log "Could not parse uninstall command for $name: $toRun" "ERROR"
-                    }
-                }
-
-                # After attempting uninstall, provide a moment and optionally check if the DisplayName still exists
-                Start-Sleep -Seconds 2
-                $stillInstalled = $false
-                try {
-                    $stillInstalled = (Get-ItemProperty -Path $uninstallPaths -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -eq $name }) -ne $null
-                } catch {
-                    $stillInstalled = $true
-                }
-
-                if (-not $stillInstalled) {
-                    Write-Log "Confirmed: $name appears removed (or no longer present in registry uninstall entries)" "ACTION"
-                } else {
-                    Write-Log "Warning: $name still appears present after uninstall attempt. Manual removal may be required." "WARN"
-                }
-            } else {
-                Write-Log "Skipped uninstall for $name" "INFO"
             }
         }
+    } catch {
+        Write-Host "Win32 package scan failed: $_" -ForegroundColor Red
     }
-
-    Write-Log "Finished scanning/uninstall attempts for suspicious applications." "INFO"
 }
 
 # ====== Password & Account Lockout Policy ======
 function Configure-PasswordPolicy {
-    Write-Log "Preparing to configure password complexity and account lockout policies" "ACTION"
     if (Confirm-Action "Apply password complexity and lockout policies?") {
         try {
             secedit /export /cfg "$env:TEMP\secpol.cfg" | Out-Null
-
             (Get-Content "$env:TEMP\secpol.cfg") |
                 ForEach-Object {
                     $_ -replace "PasswordComplexity = 0", "PasswordComplexity = 1" `
@@ -354,136 +190,221 @@ function Configure-PasswordPolicy {
                        -replace "ResetLockoutCount = \d+", "ResetLockoutCount = 30" `
                        -replace "LockoutDuration = \d+", "LockoutDuration = 30"
                 } | Set-Content "$env:TEMP\secpol.cfg"
-
             secedit /configure /db secedit.sdb /cfg "$env:TEMP\secpol.cfg" /areas SECURITYPOLICY | Out-Null
             Remove-Item "$env:TEMP\secpol.cfg" -Force
-            Write-Log "Password complexity and lockout policies applied" "INFO"
+            Write-Host "Password complexity and lockout policies applied" -ForegroundColor Green
         } catch {
-            Write-Log "Failed to configure password policy - $_" "ERROR"
+            Write-Host "Failed to configure password policy: $_" -ForegroundColor Red
         }
     } else {
-        Write-Log "Skipped applying password and lockout policy" "INFO"
+        Write-Host "Skipped password and lockout policy." -ForegroundColor Yellow
     }
 }
 
 # ====== Firewall Hardening ======
 function Harden-Firewall {
-    Write-Log "Preparing to configure Windows Firewall" "ACTION"
-
     if (Confirm-Action "Enable Windows Firewall for all profiles?") {
         try {
             Set-NetFirewallProfile -Profile Domain,Private,Public -Enabled True
-            Write-Log "Firewall enabled for Domain, Private, and Public profiles" "INFO"
+            Write-Host "Firewall enabled for Domain, Private, and Public profiles" -ForegroundColor Green
         } catch {
-            Write-Log "Failed to enable firewall - $_" "ERROR"
+            Write-Host "Failed to enable firewall: $_" -ForegroundColor Red
         }
     } else {
-        Write-Log "Skipped enabling firewall" "INFO"
+        Write-Host "Skipped enabling firewall." -ForegroundColor Yellow
     }
 
     if (Confirm-Action "Block all inbound connections by default?") {
         try {
             Set-NetFirewallProfile -Profile Domain,Private,Public -DefaultInboundAction Block
-            Write-Log "Default inbound action set to Block for all profiles" "INFO"
+            Write-Host "Default inbound action set to Block for all profiles" -ForegroundColor Green
         } catch {
-            Write-Log "Failed to set inbound blocking - $_" "ERROR"
+            Write-Host "Failed to set inbound blocking: $_" -ForegroundColor Red
         }
     } else {
-        Write-Log "Skipped setting inbound block" "INFO"
+        Write-Host "Skipped setting inbound block." -ForegroundColor Yellow
     }
 
     if (Confirm-Action "Log dropped packets and successful connections?") {
         try {
             Set-NetFirewallProfile -LogAllowed True -LogBlocked True -LogFileName '%systemroot%\system32\LogFiles\Firewall\pfirewall.log'
-            Write-Log "Firewall logging enabled" "INFO"
+            Write-Host "Firewall logging enabled" -ForegroundColor Green
         } catch {
-            Write-Log "Failed to enable firewall logging - $_" "ERROR"
+            Write-Host "Failed to enable firewall logging: $_" -ForegroundColor Red
         }
     } else {
-        Write-Log "Skipped enabling firewall logging" "INFO"
+        Write-Host "Skipped enabling firewall logging." -ForegroundColor Yellow
     }
 }
 
 # ====== Best Practices ======
 function Apply-BestPractices {
-    Write-Log "Preparing to apply Windows security best practices" "ACTION"
-
     if (Confirm-Action "Disable Guest account?") {
         try {
             Disable-LocalUser -Name "Guest"
-            Write-Log "Guest account disabled" "INFO"
+            Write-Host "Guest account disabled" -ForegroundColor Green
         } catch {
-            Write-Log "Failed to disable Guest account - $_" "ERROR"
+            Write-Host "Failed to disable Guest account: $_" -ForegroundColor Red
         }
     } else {
-        Write-Log "Skipped disabling Guest account" "INFO"
+        Write-Host "Skipped disabling Guest account." -ForegroundColor Yellow
     }
 
     if (Confirm-Action "Disable built-in Administrator account (RID 500)?") {
         try {
             Disable-LocalUser -Name "Administrator"
-            Write-Log "Built-in Administrator account disabled" "INFO"
+            Write-Host "Built-in Administrator account disabled" -ForegroundColor Green
         } catch {
-            Write-Log "Failed to disable built-in Administrator - $_" "ERROR"
+            Write-Host "Failed to disable built-in Administrator: $_" -ForegroundColor Red
         }
     } else {
-        Write-Log "Skipped disabling built-in Administrator" "INFO"
+        Write-Host "Skipped disabling built-in Administrator." -ForegroundColor Yellow
     }
 
     if (Confirm-Action "Disable PowerShell remoting?") {
         try {
             Disable-PSRemoting -Force
-            Write-Log "PowerShell remoting disabled" "INFO"
+            Write-Host "PowerShell remoting disabled" -ForegroundColor Green
         } catch {
-            Write-Log "Failed to disable PS remoting - $_" "ERROR"
+            Write-Host "Failed to disable PS remoting: $_" -ForegroundColor Red
         }
     } else {
-        Write-Log "Skipped disabling PowerShell remoting" "INFO"
+        Write-Host "Skipped disabling PowerShell remoting." -ForegroundColor Yellow
     }
 
     if (Confirm-Action "Disable AutoPlay/AutoRun?") {
         try {
             Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer" -Name "NoDriveTypeAutoRun" -Value 255
-            Write-Log "AutoPlay/AutoRun disabled" "INFO"
+            Write-Host "AutoPlay/AutoRun disabled" -ForegroundColor Green
         } catch {
-            Write-Log "Failed to disable AutoPlay/AutoRun - $_" "ERROR"
+            Write-Host "Failed to disable AutoPlay/AutoRun: $_" -ForegroundColor Red
         }
     } else {
-        Write-Log "Skipped disabling AutoPlay/AutoRun" "INFO"
+        Write-Host "Skipped disabling AutoPlay/AutoRun." -ForegroundColor Yellow
     }
 
     try {
         $secureBoot = Confirm-SecureBootUEFI -ErrorAction SilentlyContinue
-        Write-Log "Secure Boot status: $secureBoot" "INFO"
+        Write-Host "Secure Boot status: $secureBoot" -ForegroundColor Cyan
     } catch {
-        Write-Log "Secure Boot check not supported on this system" "WARN"
+        Write-Host "Secure Boot check not supported on this system" -ForegroundColor Yellow
     }
 }
 
-# ====== Summary Report ======
-function Print-Summary {
-    $actions = $Summary | Where-Object { $_.Level -eq "ACTION" }
-    $skips = $Summary | Where-Object { $_.Level -eq "INFO" -and $_.Message -match 'Skipped' }
-    $errors = $Summary | Where-Object { $_.Level -eq "ERROR" }
-
-    Write-Host "`n=== Summary Report ===" -ForegroundColor Cyan
-    Write-Host "Actions taken: $($actions.Count)"
-    Write-Host "Actions skipped: $($skips.Count)"
-    Write-Host "Errors: $($errors.Count)`n"
-
-    if ($actions.Count -gt 0) {
-        Write-Host "Actions:" -ForegroundColor Green
-        $actions | ForEach-Object { Write-Host "- $($_.Message)" }
+# ====== Remove Unused Windows Features ======
+function Remove-UnusedWindowsFeatures {
+    $UnusedFeatures = @(
+        "XPS Viewer","Internet-Explorer-Optional-amd64","SMB1Protocol","Removable Storage Management"
+    )
+    foreach ($feature in $UnusedFeatures) {
+        $state = Get-WindowsOptionalFeature -FeatureName $feature -Online -ErrorAction SilentlyContinue
+        if ($state.State -eq "Enabled") {
+            Write-Host "Windows Feature enabled: $feature" -ForegroundColor Yellow
+            if (Confirm-Action "Disable/Remove Windows Feature '$feature'?") {
+                Disable-WindowsOptionalFeature -FeatureName $feature -Online
+                Write-Host "Disabled Windows Feature: $feature" -ForegroundColor Green
+            }
+        }
     }
+}
 
-    if ($errors.Count -gt 0) {
-        Write-Host "`nErrors:" -ForegroundColor Red
-        $errors | ForEach-Object { Write-Host "- $($_.Message)" }
+# ====== Disable Unused Network Adapters ======
+function Disable-UnusedNetworkAdapters {
+    $adapters = Get-NetAdapter | Where-Object { $_.Status -eq "Up" -and $_.Name -notmatch "Ethernet|Wi-Fi" }
+    foreach ($adapter in $adapters) {
+        Write-Host "Unused network adapter detected: $($adapter.Name)" -ForegroundColor Yellow
+        if (Confirm-Action "Disable network adapter '$($adapter.Name)'?") {
+            Disable-NetAdapter -Name $adapter.Name -Confirm:$false
+            Write-Host "Disabled network adapter: $($adapter.Name)" -ForegroundColor Green
+        }
     }
+}
+
+# ====== Block All Outbound Firewall Traffic ======
+function Harden-FirewallOutbound {
+    if (Confirm-Action "Block all outbound firewall connections by default (except needed traffic)?") {
+        Set-NetFirewallProfile -Profile Domain,Private,Public -DefaultOutboundAction Block
+        Write-Host "Default outbound action set to Block for all profiles" -ForegroundColor Green
+    } else {
+        Write-Host "Skipped outbound firewall blocking." -ForegroundColor Yellow
+    }
+}
+
+# ====== Remove Custom Firewall Rules ======
+function Remove-CustomFirewallRules {
+    $customRules = Get-NetFirewallRule | Where-Object { $_.Group -ne "Windows Firewall" }
+    foreach ($rule in $customRules) {
+        Write-Host "Custom firewall rule detected: $($rule.Name)" -ForegroundColor Yellow
+        if (Confirm-Action "Delete custom firewall rule '$($rule.Name)'?") {
+            Remove-NetFirewallRule -Name $rule.Name
+            Write-Host "Removed firewall rule: $($rule.Name)" -ForegroundColor Green
+        }
+    }
+}
+
+# ====== Enable Automatic Updates ======
+function Enable-AutomaticUpdates {
+    if (Confirm-Action "Enable automatic updates for Windows?") {
+        Set-Service -Name wuauserv -StartupType Automatic
+        Write-Host "Automatic updates enabled." -ForegroundColor Green
+    } else {
+        Write-Host "Skipped enabling automatic updates." -ForegroundColor Yellow
+    }
+}
+
+# ====== Check Defender Status and Run Quick Scan ======
+function Check-AVAndScan {
+    $defender = Get-Service -Name WinDefend -ErrorAction SilentlyContinue
+    if ($defender -and $defender.Status -eq "Running") {
+        Write-Host "Windows Defender is running." -ForegroundColor Green
+        if (Confirm-Action "Run a quick antivirus scan with Windows Defender?") {
+            Start-MpScan -ScanType QuickScan
+            Write-Host "Quick Defender scan started." -ForegroundColor Green
+        }
+    } else {
+        Write-Host "Windows Defender is NOT running!" -ForegroundColor Red
+    }
+}
+
+# ====== Remove Scheduled Tasks ======
+function Remove-BadScheduledTasks {
+    $tasks = Get-ScheduledTask | Where-Object { $_.TaskName -match 'Update|Game|Remote|Utility|Chat|Cleaner' }
+    foreach ($task in $tasks) {
+        Write-Host "Suspicious scheduled task: $($_.TaskName)" -ForegroundColor Yellow
+        if (Confirm-Action "Delete scheduled task '$($_.TaskName)'?") {
+            Unregister-ScheduledTask -TaskName $_.TaskName -Confirm:$false
+            Write-Host "Removed scheduled task: $($_.TaskName)" -ForegroundColor Green
+        }
+    }
+}
+
+# ====== Set UAC to Highest Security ======
+function Harden-UAC {
+    if (Confirm-Action "Set User Account Control (UAC) to highest security?") {
+        Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" `
+            -Name "ConsentPromptBehaviorAdmin" -Value 2
+        Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" `
+            -Name "EnableLUA" -Value 1
+        Write-Host "UAC set to highest security level." -ForegroundColor Green
+    } else {
+        Write-Host "Skipped changing UAC settings." -ForegroundColor Yellow
+    }
+}
+
+# ====== Print Final Scoring/Safety Checklist ======
+function Print-ActionSummary {
+    Write-Host "`n=== End of Hardening Script ===" -ForegroundColor Cyan
+    Write-Host "Checklist for points and safety review:" -ForegroundColor Magenta
+    Write-Host "- Extra admin/hidden/guest/local accounts"
+    Write-Host "- Unused software in Program Files folders"
+    Write-Host "- Remaining scheduled tasks and service list"
+    Write-Host "- Local Group Policy Editor for sanctioned policies"
+    Write-Host "- Confirm Defender reports zero threats"
+    Write-Host "`nKeep this window open for scoring documentation!"
 }
 
 # ====== Run All Steps ======
-Write-Log "=== Starting Windows Hardening Script ==="
+Write-Host "=== Starting Windows Hardening Script ===" -ForegroundColor Cyan
 Enable-AllAudits
 Manage-Users
 Harden-Services
@@ -491,5 +412,13 @@ Remove-BadTools
 Configure-PasswordPolicy
 Harden-Firewall
 Apply-BestPractices
-Write-Log "=== Finished Windows Hardening Script ==="
-Print-Summary
+Remove-UnusedWindowsFeatures
+Disable-UnusedNetworkAdapters
+Harden-FirewallOutbound
+Remove-CustomFirewallRules
+Enable-AutomaticUpdates
+Check-AVAndScan
+Remove-BadScheduledTasks
+Harden-UAC
+Print-ActionSummary
+Write-Host "=== Finished Windows Hardening Script ===" -ForegroundColor Cyan

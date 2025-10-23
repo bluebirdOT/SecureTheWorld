@@ -27,7 +27,7 @@ function Enable-AllAudits {
             auditpol /set /category:* /success:enable /failure:enable | Out-Null
             Write-Host "All audit categories set to Success and Failure" -ForegroundColor Green
         } catch {
-            Write-Host "Failed to configure audit policies: $_" -ForegroundColor Red
+            Write-Host "Failed to configure audit policies: ${_}" -ForegroundColor Red
         }
     } else {
         Write-Host "Skipped audit policy changes." -ForegroundColor Yellow
@@ -60,7 +60,7 @@ function Manage-Users {
                     New-LocalUser -Name $user -Password $password -UserMayNotChangePassword $false -PasswordNeverExpires $false
                     Write-Host "Added missing user: $user" -ForegroundColor Green
                 } catch {
-                    Write-Host "Failed to add user $user: $_" -ForegroundColor Red
+                    Write-Host "Failed to add user ${user}: ${_}" -ForegroundColor Red
                 }
             }
         }
@@ -68,16 +68,19 @@ function Manage-Users {
 
     # Remove unauthorized users
     foreach ($user in $localUsers) {
-        if (-not $authorizedUsers.ContainsKey($user)) {
-            if (Confirm-Action "User '$user' is not authorized. Remove?") {
-                try {
-                    Remove-LocalUser -Name $user
-                    Write-Host "Removed unauthorized user: $user" -ForegroundColor Green
-                } catch {
-                    Write-Host "Failed to remove user $user: $_" -ForegroundColor Red
-                }
-            }
-        }
+       if ($user -in @("Administrator","Guest","defaultaccount","WDAGUtilityAccount")) {
+           if (Confirm-Action "User '$user' is built-in. Disable instead of removing?") {
+           Disable-LocalUser -Name $user
+           Write-Host "Disabled built-in user: ${user}" -ForegroundColor Green
+           }
+       } else {
+           try {
+               Remove-LocalUser -Name $user
+               Write-Host "Removed unauthorized user: ${user}" -ForegroundColor Green
+           } catch {
+               Write-Host "Failed to remove user ${user}: $($_.Exception.Message)" -ForegroundColor Red
+           }
+       }
     }
 
     # Manage admin rights
@@ -92,7 +95,7 @@ function Manage-Users {
                     Add-LocalGroupMember -Group "Administrators" -Member $user
                     Write-Host "Granted admin rights to $user" -ForegroundColor Green
                 } catch {
-                    Write-Host "Failed to add admin rights to $user: $_" -ForegroundColor Red
+                    Write-Host "Failed to add admin rights to ${user}: ${_}" -ForegroundColor Red
                 }
             }
         } elseif (-not $shouldBeAdmin -and $isAdmin) {
@@ -101,7 +104,7 @@ function Manage-Users {
                     Remove-LocalGroupMember -Group "Administrators" -Member $user
                     Write-Host "Removed admin rights from $user" -ForegroundColor Green
                 } catch {
-                    Write-Host "Failed to remove admin rights from $user: $_" -ForegroundColor Red
+                    Write-Host "Failed to remove admin rights from ${user}: $_" -ForegroundColor Red
                 }
             }
         }
@@ -125,7 +128,7 @@ function Harden-Services {
                     Set-Service -Name $service -StartupType Disabled
                     Write-Host "Disabled service: $service" -ForegroundColor Green
                 } catch {
-                    Write-Host "Failed to disable service $service: $_" -ForegroundColor Red
+                    Write-Host "Failed to disable service ${service}: ${_}" -ForegroundColor Red
                 }
             }
         }

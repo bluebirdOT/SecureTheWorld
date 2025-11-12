@@ -1,7 +1,7 @@
 # SecureTheWorld
 This is my repo of scripts on my journey to SecureTheWorld
 
-# CyberPatriot Windows Hardening Script
+# Windows Hardening Script
 
 **Author:** *William Torres*  
 **Version:** 1.2 

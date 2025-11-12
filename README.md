@@ -1,5 +1,5 @@
 # SecureTheWorld
-This is my repo of CyberPatriot scripts on my journey to SecureTheWorld
+This is my repo of scripts on my journey to SecureTheWorld
 
 # CyberPatriot Windows Hardening Script
 
@@ -11,7 +11,7 @@ This is my repo of CyberPatriot scripts on my journey to SecureTheWorld
 
 ## Overview
 
-`secure_windows.ps1` is a **prompt-driven Windows hardening script** designed specifically for **CyberPatriot competitions** and similar security challenges.  
+`secure_windows.ps1` is a **prompt-driven Windows hardening script** designed specifically for **hardening windows** and similar security challenges.  
 
 This script:
 - Strengthens **user accounts**, **Group Policy Objects**, **Local Security Policies**, and **Windows firewall rules**
@@ -29,7 +29,7 @@ This script:
 ## 📂 File Setup
 
 When using this script:
-- Place `secure_windows.ps1` in **any directory** on your competition image  
+- Place `secure_windows.ps1` in **any directory** on your system  
 - Create a `Users.txt` file in **the same directory** as `secure_windows.ps1` before running  
 - This repo only contains the script and documentation — **Users.txt will be unique to your image**
 
@@ -54,7 +54,7 @@ guestuser;
 
 ## 🚀 Usage
 
-1. **Clone this repo directly to the target image**
+1. **Clone this repo directly to the target system
    ```powershell
    git clone https://github.com/bluebirdOT/SecureTheWorld.git
    cd SecureTheWorld

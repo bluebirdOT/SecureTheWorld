@@ -73,12 +73,14 @@ function Manage-Users {
            Disable-LocalUser -Name $user
            Write-Host "Disabled built-in user: ${user}" -ForegroundColor Green
            }
-       } else {
-           try {
-               Remove-LocalUser -Name $user
-               Write-Host "Removed unauthorized user: ${user}" -ForegroundColor Green
-           } catch {
-               Write-Host "Failed to remove user ${user}: $($_.Exception.Message)" -ForegroundColor Red
+       } elseif (-not $authorizedUsers.ContainsKey($user)) {
+           if (Confirm-Action "User '$user' is not in authorized list. Remove?") {
+               try {
+                   Remove-LocalUser -Name $user
+                   Write-Host "Removed unauthorized user: ${user}" -ForegroundColor Green
+               } catch {
+                   Write-Host "Failed to remove user ${user}: $($_.Exception.Message)" -ForegroundColor Red
+               }
            }
        }
     }
